@@ -66,8 +66,17 @@ class Attention(nn.Module):
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
 
-        mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
+        mask = torch.full((args.max_seq_len, args.max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
+
+        # ALiBi attention mask - https://arxiv.org/abs/2108.12409
+        for i in range(args.max_seq_len):
+          mask += torch.diag(torch.full((args.max_seq_len - i,), -i), -i)
+        mask = mask.repeat(1, args.n_heads, 1, 1)
+
+        indices = torch.arange(args.n_heads, dtype=torch.float) + 1
+        slopes = 2 ** (-8 / indices)
+        mask *= slopes.view(1, args.n_heads, 1, 1)
         self.register_buffer("mask", mask)
 
     def forward(
