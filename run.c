@@ -159,11 +159,19 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     memory_map_weights(weights, config, weights_ptr, shared_weights);
 }
 
+static float* slopes = NULL;
+
 void build_transformer(Transformer *t, char* checkpoint_path) {
     // read in the Config and the Weights from the checkpoint
     read_checkpoint(checkpoint_path, &t->config, &t->weights, &t->fd, &t->data, &t->file_size);
     // allocate the RunState buffers
     malloc_run_state(&t->state, &t->config);
+
+    Config* p = &t->config;
+    slopes = malloc(p->n_heads * sizeof(float));
+    for (int i = 0; i < p->n_heads; ++i) {
+        slopes[i] = powf(2.0f, -8.0f / (float)(i + 1));
+    }
 }
 
 void free_transformer(Transformer* t) {
@@ -172,6 +180,7 @@ void free_transformer(Transformer* t) {
     if (t->fd != -1) { close(t->fd); }
     // free the RunState buffers
     free_run_state(&t->state);
+    free(slopes);
 }
 
 // ----------------------------------------------------------------------------
@@ -273,8 +282,9 @@ float* forward(Transformer* transformer, int token, int pos) {
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * p->seq_len;
                 // calculate the attention score as the absolute difference of q and k
                 float score = -fabs(k[t] - q[t]);
+                float bias = -(pos - t) * slopes[h]; // TODO could precompute this i.e biases[h][pos - t]
                 // save the score to the attention buffer
-                att[t] = score;
+                att[t] = score + bias;
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
