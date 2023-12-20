@@ -117,9 +117,9 @@ void memory_map_weights(TransformerWeights *w, Config* p, float* ptr, int shared
     w->rms_att_weight = ptr;
     ptr += n_layers * p->dim;
     w->wq = ptr;
-    ptr += n_layers * p->dim * (p->n_heads * head_size);
+    ptr += n_layers * p->dim * (p->n_heads * 1);
     w->wk = ptr;
-    ptr += n_layers * p->dim * (p->n_kv_heads * head_size);
+    ptr += n_layers * p->dim * (p->n_kv_heads * 1);
     w->wv = ptr;
     ptr += n_layers * p->dim * (p->n_kv_heads * head_size);
     w->wo = ptr;
@@ -134,8 +134,6 @@ void memory_map_weights(TransformerWeights *w, Config* p, float* ptr, int shared
     ptr += n_layers * p->dim * p->hidden_dim;
     w->rms_final_weight = ptr;
     ptr += p->dim;
-    ptr += p->seq_len * head_size / 2; // skip what used to be freq_cis_real (for RoPE)
-    ptr += p->seq_len * head_size / 2; // skip what used to be freq_cis_imag (for RoPE)
     w->wcls = shared_weights ? w->token_embedding_table : ptr;
 }
 
@@ -257,45 +255,24 @@ float* forward(Transformer* transformer, int token, int pos) {
         s->v = s->value_cache + loff + pos * kv_dim;
 
         // qkv matmuls for this position
-        matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
-        matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
+        matmul(s->q, s->xb, w->wq + l*dim*dim, dim, 1);
+        matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, 1);
         matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
-
-        // RoPE relative positional encoding: complex-valued rotate q and k in each head
-        for (int i = 0; i < dim; i+=2) {
-            int head_dim = i % head_size;
-            float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
-            float val = pos * freq;
-            float fcr = cosf(val);
-            float fci = sinf(val);
-            int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-            for (int v = 0; v < rotn; v++) {
-                float* vec = v == 0 ? s->q : s->k; // the vector to rotate (query or key)
-                float v0 = vec[i];
-                float v1 = vec[i+1];
-                vec[i]   = v0 * fcr - v1 * fci;
-                vec[i+1] = v0 * fci + v1 * fcr;
-            }
-        }
 
         // multihead attention. iterate over all heads
         int h;
         #pragma omp parallel for private(h)
         for (h = 0; h < p->n_heads; h++) {
             // get the query vector for this head
-            float* q = s->q + h * head_size;
+            float* q = s->q + h * p->seq_len;
             // attention scores for this head
             float* att = s->att + h * p->seq_len;
             // iterate over all timesteps, including the current one
             for (int t = 0; t <= pos; t++) {
                 // get the key vector for this head and at this timestep
-                float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                // calculate the attention score as the dot product of q and k
-                float score = 0.0f;
-                for (int i = 0; i < head_size; i++) {
-                    score += q[i] * k[i];
-                }
-                score /= sqrtf(head_size);
+                float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * p->seq_len;
+                // calculate the attention score as the absolute difference of q and k
+                float score = -fabs(k[t] - q[t]);
                 // save the score to the attention buffer
                 att[t] = score;
             }
