@@ -114,9 +114,6 @@ def legacy_export(model, filepath):
         serialize_fp32(out_file, layer.feed_forward.w3.weight)
     # final rmsnorm
     serialize_fp32(out_file, model.norm.weight)
-    # freqs_cis
-    serialize_fp32(out_file, model.freqs_cos[:p.max_seq_len])
-    serialize_fp32(out_file, model.freqs_sin[:p.max_seq_len])
 
     # final classifier weights
     if not shared_classifier:
